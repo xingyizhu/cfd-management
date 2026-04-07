@@ -17,7 +17,7 @@ from cfd_report.atlassian import get_team_members, search_jira_issues
 from cfd_report.config import Config
 from cfd_report.emailer import send_reminders
 from cfd_report.holidays import get_cn_holidays, latest_workday
-from cfd_report.reporter import date_ranges, render_markdown
+from cfd_report.reporter import date_ranges, range_meta, render_markdown
 from cfd_report.supabase_client import (
     check_cache,
     check_entries_cache,
@@ -112,7 +112,9 @@ def main() -> None:
         under = find_under_logged(daily, ranges["today"], cfg.daily_target_hours)
         if under:
             print(f"\n📧 发送邮件提醒（{len(under)} 人）...")
-            sent, skipped = send_reminders(under, ranges["today"], cfg)
+            reminder_context = range_meta(target, target, holidays)
+            reminder_context["required_hours"] = cfg.daily_target_hours
+            sent, skipped = send_reminders(under, reminder_context, cfg)
             print(f"  成功 {len(sent)} 封，跳过 {len(skipped)} 封")
             if skipped:
                 print("  跳过：" + "、".join(skipped))
