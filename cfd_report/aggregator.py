@@ -15,6 +15,28 @@ def _quarter_key(d: date) -> str:
     return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
 
 
+def _derive_project_key(issue_key: str) -> str:
+    if "-" not in issue_key:
+        return issue_key.strip()
+    return issue_key.split("-", 1)[0].strip()
+
+
+def _is_done_status(status_name: Any) -> bool:
+    normalized = str(status_name or "").strip()
+    if not normalized:
+        return False
+
+    casefolded = normalized.casefold()
+    return casefolded in {"done", "closed", "resolved"} or normalized in {
+        "已完成",
+        "完成",
+        "已关闭",
+        "关闭",
+        "已解决",
+        "解决",
+    }
+
+
 def iter_workdays(date_from: str, date_to: str, holidays: set[str]) -> list[str]:
     start_date = date.fromisoformat(date_from)
     end_date = date.fromisoformat(date_to)
@@ -260,6 +282,11 @@ def build_entry_rows_for_range(
         fields = issue.get("fields", {})
         issue_summary = fields.get("summary", "")
         estimated_sec = fields.get("timeoriginalestimate", 0) or 0
+        project = fields.get("project", {}) or {}
+        project_key = project.get("key", "") or _derive_project_key(issue_key)
+        project_name = project.get("name", "") or project_key
+        status = fields.get("status", {}) or {}
+        status_name = status.get("name", "") or "未知"
         worklogs = fields.get("worklog", {}).get("worklogs", [])
 
         for worklog in worklogs:
@@ -289,6 +316,9 @@ def build_entry_rows_for_range(
                     "issue_summary": issue_summary,
                     "time_sec": 0,
                     "estimated_sec": estimated_sec,
+                    "project_key": project_key,
+                    "project_name": project_name,
+                    "status_name": status_name,
                     "updated_at": now_ts,
                 }
 
@@ -303,6 +333,140 @@ def build_entry_rows_for_range(
         )
     )
     return rows
+
+
+def aggregate_member_task_summary_cards(
+    entry_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate tracked tasks into member cards grouped by Jira project."""
+    task_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in entry_rows:
+        account_id = str(row.get("account_id", "") or "").strip()
+        issue_key = str(row.get("issue_key", "") or "").strip()
+        if not account_id or not issue_key:
+            continue
+
+        project_key = str(row.get("project_key", "") or "").strip() or _derive_project_key(issue_key)
+        project_name = str(row.get("project_name", "") or "").strip() or project_key
+        status_name = str(row.get("status_name", "") or "").strip() or "未知"
+        map_key = (account_id, issue_key)
+
+        if map_key not in task_by_key:
+            task_by_key[map_key] = {
+                "account_id": account_id,
+                "display_name": str(row.get("display_name", "") or account_id),
+                "project_key": project_key,
+                "project_name": project_name,
+                "issue_key": issue_key,
+                "issue_summary": str(row.get("issue_summary", "") or ""),
+                "status_name": status_name,
+                "time_sec": 0,
+                "estimated_sec": 0,
+            }
+
+        task = task_by_key[map_key]
+        task["time_sec"] += row.get("time_sec", 0) or 0
+        task["estimated_sec"] = max(task.get("estimated_sec", 0) or 0, row.get("estimated_sec", 0) or 0)
+
+        if task.get("project_key") in {"", "UNKNOWN"} and project_key:
+            task["project_key"] = project_key
+        if task.get("project_name") in {"", task.get("project_key", "")} and project_name:
+            task["project_name"] = project_name
+        if task.get("status_name") == "未知" and status_name:
+            task["status_name"] = status_name
+
+    tasks_by_member: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for task in task_by_key.values():
+        tasks_by_member[task["account_id"]].append(task)
+
+    member_cards: list[dict[str, Any]] = []
+    for account_id, tasks in tasks_by_member.items():
+        tasks.sort(
+            key=lambda item: (
+                -(item.get("time_sec", 0) or 0),
+                item.get("issue_key", ""),
+            )
+        )
+
+        projects_by_key: dict[str, dict[str, Any]] = {}
+        total_time_sec = 0
+        done_task_count = 0
+
+        for task in tasks:
+            total_time_sec += task.get("time_sec", 0) or 0
+            if _is_done_status(task.get("status_name")):
+                done_task_count += 1
+
+            project_key = task.get("project_key", "") or "UNKNOWN"
+            if project_key not in projects_by_key:
+                projects_by_key[project_key] = {
+                    "project_key": project_key,
+                    "project_name": task.get("project_name", "") or project_key,
+                    "total_time_sec": 0,
+                    "task_count": 0,
+                    "tasks": [],
+                }
+
+            project = projects_by_key[project_key]
+            project["total_time_sec"] += task.get("time_sec", 0) or 0
+            project["task_count"] += 1
+            project["tasks"].append(task)
+
+        projects = list(projects_by_key.values())
+        for project in projects:
+            project["tasks"].sort(
+                key=lambda item: (
+                    -(item.get("time_sec", 0) or 0),
+                    item.get("issue_key", ""),
+                )
+            )
+
+        projects.sort(
+            key=lambda item: (
+                -(item.get("total_time_sec", 0) or 0),
+                item.get("project_key", ""),
+            )
+        )
+
+        task_count = len(tasks)
+        open_task_count = task_count - done_task_count
+        top_project = projects[0] if projects else {"project_key": "", "project_name": ""}
+        top_project_key = str(top_project.get("project_key", "") or "")
+        top_project_name = str(top_project.get("project_name", "") or top_project_key)
+        if top_project_name and top_project_name != top_project_key:
+            top_project_label = f"{top_project_key}（{top_project_name}）"
+        else:
+            top_project_label = top_project_key or top_project_name or "未识别项目"
+
+        summary_text = (
+            f"本区间登记了 {task_count} 个任务，覆盖 {len(projects)} 个 Jira 项目；"
+            f"工时主要集中在 {top_project_label}；已完成 {done_task_count} 个，未完成 {open_task_count} 个。"
+        )
+
+        member_cards.append(
+            {
+                "account_id": account_id,
+                "display_name": tasks[0].get("display_name", account_id),
+                "total_time_sec": total_time_sec,
+                "task_count": task_count,
+                "project_count": len(projects),
+                "done_task_count": done_task_count,
+                "open_task_count": open_task_count,
+                "top_project_key": top_project_key,
+                "top_project_name": top_project_name,
+                "summary_text": summary_text,
+                "projects": projects,
+            }
+        )
+
+    member_cards.sort(
+        key=lambda item: (
+            -(item.get("total_time_sec", 0) or 0),
+            item.get("display_name", ""),
+        )
+    )
+    return member_cards
 
 
 def aggregate_member_range_rows(

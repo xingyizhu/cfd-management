@@ -8,6 +8,25 @@ import requests
 from .config import Config
 from .holidays import get_cn_holidays, is_workday
 
+ENTRY_DETAIL_COLUMNS = (
+    "account_id",
+    "display_name",
+    "work_date",
+    "issue_key",
+    "issue_summary",
+    "time_sec",
+    "estimated_sec",
+    "project_key",
+    "project_name",
+    "status_name",
+    "updated_at",
+)
+LEGACY_ENTRY_DETAIL_COLUMNS = tuple(
+    column
+    for column in ENTRY_DETAIL_COLUMNS
+    if column not in {"project_key", "project_name", "status_name"}
+)
+
 
 def _headers(cfg: Config) -> dict[str, str]:
     return {
@@ -182,14 +201,30 @@ def upsert_entry_rows(cfg: Config, rows: list[dict[str, Any]]) -> int:
         return 0
 
     url = f"{cfg.supabase_url}/rest/v1/worklog_entries"
-    response = requests.post(
-        url,
-        params={"on_conflict": "account_id,work_date,issue_key"},
-        json=rows,
-        headers=_upsert_headers(cfg),
-        timeout=20,
-    )
-    response.raise_for_status()
+    response = requests.post(url, params={"on_conflict": "account_id,work_date,issue_key"}, json=rows, headers=_upsert_headers(cfg), timeout=20)
+    if not response.ok:
+        body = response.text.lower()
+        has_extended_field_error = (
+            response.status_code == 400
+            and any(field in body for field in ("project_key", "project_name", "status_name"))
+        )
+        if not has_extended_field_error:
+            response.raise_for_status()
+
+        legacy_rows = [
+            {column: row.get(column) for column in LEGACY_ENTRY_DETAIL_COLUMNS if column in row}
+            for row in rows
+        ]
+        fallback_response = requests.post(
+            url,
+            params={"on_conflict": "account_id,work_date,issue_key"},
+            json=legacy_rows,
+            headers=_upsert_headers(cfg),
+            timeout=20,
+        )
+        fallback_response.raise_for_status()
+        return len(legacy_rows)
+
     return len(rows)
 
 
@@ -392,7 +427,7 @@ def fetch_high_estimate_entries(
 
     url = (
         f"{cfg.supabase_url}/rest/v1/worklog_entries"
-        f"?select=account_id,display_name,work_date,issue_key,issue_summary,time_sec,estimated_sec"
+        f"?select=account_id,display_name,work_date,issue_key,issue_summary,time_sec,estimated_sec,project_key,project_name,status_name"
         f"&work_date=eq.{work_date}"
         f"&estimated_sec=gt.{threshold_sec}"
         f"&order=estimated_sec.desc,issue_key.asc,account_id.asc"

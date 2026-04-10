@@ -77,6 +77,21 @@ streamlit run app.py   # 访问 http://localhost:8501
 ### worklog_weekly（week_start 为周一日期）
 ### worklog_quarterly（quarter_key 格式：2026-Q2）
 
+### worklog_entries
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| account_id | text (PK) | Jira accountId |
+| work_date | date (PK) | 工作日期 |
+| issue_key | text (PK) | Jira Issue Key |
+| display_name | text | 成员显示名 |
+| issue_summary | text | Issue 摘要 |
+| time_sec | int | 该成员在该日该事项登记的秒数 |
+| estimated_sec | int | Issue 原始预估秒数 |
+| project_key | text | Jira 项目 Key |
+| project_name | text | Jira 项目名称 |
+| status_name | text | Jira 当前状态名称 |
+| updated_at | timestamptz | 更新时间 |
+
 ## 关联 Skill
 
 `/jira-cfd-daily-report` — 通过 Claude Code skill 触发完整报告流程（含 MCP 工具调用）

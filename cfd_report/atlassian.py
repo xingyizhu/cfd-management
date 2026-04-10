@@ -113,8 +113,16 @@ def search_jira_issues(
         f'AND worklogDate >= "{date_from}" '
         f'AND worklogDate <= "{date_to}"'
     )
-    fields = ["summary", "status", "issuetype", "assignee",
-              "timespent", "timeoriginalestimate", "worklog"]
+    fields = [
+        "summary",
+        "status",
+        "project",
+        "issuetype",
+        "assignee",
+        "timespent",
+        "timeoriginalestimate",
+        "worklog",
+    ]
 
     url = f"{cfg.atlassian_cloud_url}/rest/api/3/search/jql"
     issues: list[dict[str, Any]] = []

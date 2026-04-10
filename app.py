@@ -2,15 +2,23 @@
 from __future__ import annotations
 
 import html
+import json
 from datetime import date, timedelta
 from math import ceil
+from textwrap import dedent
 from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
 
+from cfd_report.ai_summary import (
+    build_rule_member_summary,
+    is_ai_summary_enabled,
+    summarize_member_task_cards,
+)
 from cfd_report.aggregator import (
     aggregate_high_estimate_range_entries,
+    aggregate_member_task_summary_cards,
     aggregate_no_estimate_range_entries,
     aggregate_member_range_rows,
     find_under_logged_range,
@@ -241,6 +249,84 @@ def inject_styles() -> None:
             background: rgba(56, 86, 146, 0.22);
         }
 
+        table.cfd-table a {
+            color: #8fd3ff;
+            text-decoration: none;
+        }
+
+        table.cfd-table a:hover {
+            text-decoration: underline;
+        }
+
+        .member-card-shell {
+            border: 1px solid rgba(143, 173, 253, 0.26);
+            border-radius: 18px;
+            background: linear-gradient(160deg, rgba(15, 28, 58, 0.92), rgba(8, 18, 38, 0.92));
+            box-shadow: var(--shadow);
+            padding: 1rem 1.05rem;
+            margin-bottom: 1rem;
+        }
+
+        .member-card-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: flex-start;
+        }
+
+        .member-card-name {
+            margin: 0;
+            font-size: 1.08rem;
+            color: #f5f8ff;
+            font-weight: 700;
+        }
+
+        .member-card-summary {
+            margin: 0.32rem 0 0;
+            color: var(--text-sub);
+            font-size: 0.9rem;
+            line-height: 1.55;
+        }
+
+        .member-chip-row {
+            display: flex;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .member-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.3rem 0.65rem;
+            border-radius: 999px;
+            border: 1px solid rgba(147, 178, 255, 0.28);
+            background: rgba(20, 35, 70, 0.72);
+            color: #dce8ff;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+
+        .project-block {
+            margin-top: 0.95rem;
+            padding-top: 0.9rem;
+            border-top: 1px solid rgba(132, 161, 230, 0.18);
+        }
+
+        .project-title {
+            margin: 0;
+            font-size: 0.98rem;
+            font-weight: 700;
+            color: #eef4ff;
+        }
+
+        .project-note {
+            margin: 0.18rem 0 0.45rem;
+            font-size: 0.82rem;
+            color: #a9bbe4;
+        }
+
         div[data-testid="stAlert"] {
             border-radius: 12px;
             border: 1px solid rgba(143, 175, 250, 0.34);
@@ -366,23 +452,38 @@ def _build_issue_url(issue_key: str) -> str:
     return f"{base_url}/browse/{quote(issue_key, safe='-')}"
 
 
+def _build_issue_link_html(issue_key: str) -> str:
+    issue_url = _build_issue_url(issue_key)
+    issue_cell = html.escape(issue_key)
+    if issue_url:
+        issue_cell = (
+            f'<a href="{html.escape(issue_url, quote=True)}" '
+            f'target="_blank" rel="noopener noreferrer">{html.escape(issue_key)}</a>'
+        )
+    return issue_cell
+
+
+def _format_project_label(project_key: str, project_name: str) -> str:
+    safe_key = (project_key or "").strip()
+    safe_name = (project_name or "").strip()
+    if safe_key and safe_name and safe_name != safe_key:
+        return f"{safe_key} · {safe_name}"
+    return safe_key or safe_name or "未识别项目"
+
+
+def _build_table_html(df: pd.DataFrame, *, escape: bool) -> str:
+    return df.to_html(index=False, classes="cfd-table", border=0, escape=escape)
+
+
 def render_issue_task_table(rows: list[dict[str, object]]) -> None:
     table_rows: list[dict[str, str]] = []
 
     for row in rows:
         issue_key = str(row.get("issue_key", ""))
-        issue_url = _build_issue_url(issue_key)
-        issue_cell = html.escape(issue_key)
-        if issue_url:
-            issue_cell = (
-                f'<a href="{html.escape(issue_url, quote=True)}" '
-                f'target="_blank" rel="noopener noreferrer">{html.escape(issue_key)}</a>'
-            )
-
         table_rows.append(
             {
                 "成员": html.escape(str(row.get("display_name", ""))),
-                "Issue": issue_cell,
+                "Issue": _build_issue_link_html(issue_key),
                 "摘要": html.escape(str(row.get("issue_summary", ""))),
                 "预估(h)": f"{s2h(row.get('estimated_sec')):.2f}",
                 "区间记录(h)": f"{s2h(row.get('time_sec')):.2f}",
@@ -390,8 +491,79 @@ def render_issue_task_table(rows: list[dict[str, object]]) -> None:
         )
 
     table_df = pd.DataFrame(table_rows)
-    table_html = table_df.to_html(index=False, classes="cfd-table", border=0, escape=False)
+    table_html = _build_table_html(table_df, escape=False)
     st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
+
+
+def _build_project_task_table_html(tasks: list[dict[str, object]]) -> str:
+    table_rows: list[dict[str, str]] = []
+    for task in tasks:
+        issue_key = str(task.get("issue_key", ""))
+        table_rows.append(
+            {
+                "Issue": _build_issue_link_html(issue_key),
+                "摘要": html.escape(str(task.get("issue_summary", ""))),
+                "进度": html.escape(str(task.get("status_name", "") or "未知")),
+                "预估(h)": f"{s2h(task.get('estimated_sec')):.2f}",
+                "区间记录(h)": f"{s2h(task.get('time_sec')):.2f}",
+            }
+        )
+
+    if not table_rows:
+        return ""
+
+    table_df = pd.DataFrame(table_rows)
+    return _build_table_html(table_df, escape=False)
+
+
+def _build_member_task_card_html(member: dict[str, object]) -> str:
+    chip_items = [
+        f"已记录 {s2h(member.get('total_time_sec')):.2f} h",
+        f"任务 {int(member.get('task_count', 0) or 0)} 个",
+        f"项目 {int(member.get('project_count', 0) or 0)} 个",
+        f"Done {int(member.get('done_task_count', 0) or 0)} 个",
+    ]
+    chip_html = "".join(
+        f'<span class="member-chip">{html.escape(item)}</span>'
+        for item in chip_items
+    )
+
+    project_sections: list[str] = []
+    for project in member.get("projects", []):
+        project_label = _format_project_label(
+            str(project.get("project_key", "")),
+            str(project.get("project_name", "")),
+        )
+        table_html = _build_project_task_table_html(project.get("tasks", []))
+        project_sections.append(
+            dedent(
+                f"""
+                <div class="project-block">
+                    <p class="project-title">{html.escape(project_label)}</p>
+                    <p class="project-note">
+                        任务 {int(project.get("task_count", 0) or 0)} 个 ·
+                        已记录 {s2h(project.get("total_time_sec")):.2f} h
+                    </p>
+                    <div class="table-shell">{table_html}</div>
+                </div>
+                """
+            ).strip()
+        )
+
+    return dedent(
+        f"""
+        <div class="member-card-shell">
+            <div class="member-card-head">
+                <div>
+                    <p class="member-card-name">{html.escape(str(member.get("display_name", "")))}</p>
+                    <p class="member-card-summary">{html.escape(str(member.get("summary_text", "")))}</p>
+                </div>
+                <div class="member-chip-row">{chip_html}</div>
+            </div>
+            {''.join(project_sections)}
+        </div>
+        """
+    ).strip()
 
 
 def render_estimate_task_board(meta: dict[str, object]) -> None:
@@ -493,6 +665,65 @@ def render_estimate_task_board(meta: dict[str, object]) -> None:
         st.caption(f"无预估任务共 {total_count} 条，当前显示 {start_idx + 1}-{end_idx} 条")
 
 
+def render_member_task_summary_board(meta: dict[str, object]) -> None:
+    st.markdown('<p class="section-title">成员任务归纳</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="section-desc">展示成员在所选时间范围内登记过时间追踪的任务，并按 Jira 项目空间 - 事项 - 进度 归纳。</p>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.get("member_task_board_loaded", False):
+        if st.button("加载成员任务归纳", key="member_task_board_load_btn", use_container_width=True):
+            st.session_state["member_task_board_loaded"] = True
+            st.rerun()
+        st.caption("未加载时不查询任务明细，点击后再按成员生成任务归纳。")
+        return
+
+    with st.spinner("归纳成员任务中..."):
+        entry_rows = load_estimate_entries(meta["date_from_str"], meta["date_to_str"])
+
+    member_cards = aggregate_member_task_summary_cards(entry_rows)
+    if not member_cards:
+        st.info("当前范围内暂无成员登记时间追踪任务。")
+        return
+
+    ai_summary_result: dict[str, object] = {"summaries": {}, "used_ai": False, "error": None}
+    if is_ai_summary_enabled(cfg):
+        member_cards_signature = json.dumps(member_cards, ensure_ascii=False, sort_keys=True)
+        with st.spinner("生成 AI 汇报话术中..."):
+            ai_summary_result = load_member_ai_summaries(member_cards_signature)
+
+    summaries = ai_summary_result.get("summaries", {}) or {}
+    if isinstance(summaries, dict):
+        for member in member_cards:
+            account_id = str(member.get("account_id", "") or "").strip()
+            summary_text = str(summaries.get(account_id, "") or "").strip()
+            if summary_text:
+                member["summary_text"] = summary_text
+            else:
+                member["summary_text"] = build_rule_member_summary(member)
+
+    has_missing_detail = _has_missing_entry_detail(entry_rows)
+    if has_missing_detail:
+        st.info("系统已尝试自动补同步 Jira。若仍有任务缺少项目或状态字段，请执行一次“强制重新拉取 Jira”并确认 Supabase 已新增相关列。")
+
+    if not ai_summary_result.get("used_ai", False):
+        error_hint = str(ai_summary_result.get("error", "") or "").strip()
+        if is_ai_summary_enabled(cfg):
+            if error_hint:
+                st.caption(f"AI 汇报话术生成失败（{error_hint}），当前显示规则摘要。")
+            else:
+                st.caption("AI 汇报话术生成失败，当前显示规则摘要。")
+        else:
+            st.caption("未配置 OpenAI API，当前显示规则摘要。")
+
+    total_tasks = sum(int(card.get("task_count", 0) or 0) for card in member_cards)
+    st.caption(f"共 {len(member_cards)} 名成员，登记了 {total_tasks} 个任务。")
+
+    for member in member_cards:
+        st.markdown(_build_member_task_card_html(member), unsafe_allow_html=True)
+
+
 def render_under_logged_section(
     under_logged: list[dict[str, object]],
     meta: dict[str, object],
@@ -543,6 +774,14 @@ def get_holidays_for_range(start: date, end: date) -> set[str]:
     return holidays
 
 
+def _normalize_date_range(date_from: str, date_to: str) -> tuple[date, date]:
+    start = date.fromisoformat(date_from)
+    end = date.fromisoformat(date_to)
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
 @st.cache_data(ttl=14400, show_spinner=False)
 def load_team_members() -> list[dict[str, object]]:
     return get_team_members(cfg)
@@ -569,13 +808,28 @@ def _has_entry_coverage(
     return logged_dates.issubset(entry_dates)
 
 
+def _has_missing_entry_detail(entry_rows: list[dict[str, object]]) -> bool:
+    for row in entry_rows:
+        issue_key = str(row.get("issue_key", "") or "").strip()
+        if not issue_key:
+            continue
+
+        project_key = str(row.get("project_key", "") or "").strip()
+        project_name = str(row.get("project_name", "") or "").strip()
+        status_name = str(row.get("status_name", "") or "").strip()
+
+        if not project_key or project_key.upper() == "UNKNOWN":
+            return True
+        if not project_name:
+            return True
+        if not status_name or status_name == "未知" or status_name.casefold() == "unknown":
+            return True
+    return False
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_base_data(date_from: str, date_to: str, force_refresh: bool) -> dict[str, object]:
-    start = date.fromisoformat(date_from)
-    end = date.fromisoformat(date_to)
-    if start > end:
-        start, end = end, start
-
+    start, end = _normalize_date_range(date_from, date_to)
     holidays = get_holidays_for_range(start, end)
     meta = range_meta(start, end, holidays)
     members = load_team_members()
@@ -617,7 +871,32 @@ def load_base_data(date_from: str, date_to: str, force_refresh: bool) -> dict[st
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_estimate_entries(date_from: str, date_to: str) -> list[dict[str, object]]:
-    return fetch_entries_range(cfg, date_from, date_to)
+    start, end = _normalize_date_range(date_from, date_to)
+    date_from_str = start.isoformat()
+    date_to_str = end.isoformat()
+    entry_rows = fetch_entries_range(cfg, date_from_str, date_to_str)
+
+    if not entry_rows or not _has_missing_entry_detail(entry_rows):
+        return entry_rows
+
+    holidays = get_holidays_for_range(start, end)
+    members = load_team_members()
+    try:
+        sync_range_window(cfg, start, end, members, holidays)
+    except Exception:
+        return entry_rows
+    return fetch_entries_range(cfg, date_from_str, date_to_str)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_member_ai_summaries(member_cards_signature: str) -> dict[str, object]:
+    member_cards = json.loads(member_cards_signature)
+    result = summarize_member_task_cards(cfg, member_cards)
+    return {
+        "summaries": result.summaries,
+        "used_ai": result.used_ai,
+        "error": result.error,
+    }
 
 
 inject_styles()
@@ -665,7 +944,7 @@ with st.sidebar:
         refresh_btn = st.button("🔧 刷新数据", use_container_width=True, type="primary")
         with st.expander("高级选项", expanded=False):
             force_refresh = st.checkbox("强制重新拉取 Jira（忽略缓存）", value=False)
-        strategy_label = "平衡模式（查询时自动补同步）" if auto_sync_on_query else "极速读取（查询只读缓存）"
+        strategy_label = "平衡模式（查询时自动补同步）" if auto_sync_on_query else "极速读取（仅读缓存，缺失明细时补同步）"
         st.caption(f"查询策略：`{strategy_label}`")
         st.caption(f"日工时目标：`{cfg.daily_target_hours} h`")
     else:
@@ -706,6 +985,7 @@ range_signature = f"{meta['date_from_str']}|{meta['date_to_str']}"
 if st.session_state.get("estimate_board_range_signature") != range_signature:
     st.session_state["estimate_board_range_signature"] = range_signature
     st.session_state["estimate_board_loaded"] = False
+    st.session_state["member_task_board_loaded"] = False
     st.session_state["estimate_board_view"] = "no_estimate"
     st.session_state["estimate_board_high_query_signature"] = ""
     st.session_state["estimate_board_no_estimate_query_signature"] = ""
@@ -716,7 +996,7 @@ render_hero(meta, cache_hit)
 if auto_sync_on_query:
     st.caption("当前策略：平衡模式（仅在缓存覆盖不足时自动补同步）。")
 else:
-    st.caption("当前策略：极速读取（默认只读 Supabase 缓存；勾选“强制重新拉取 Jira”后刷新可同步）。")
+    st.caption("当前策略：极速读取（默认只读 Supabase 缓存；任务明细缺少项目或状态字段时会自动补同步，勾选“强制重新拉取 Jira”可全量刷新）。")
 
 member_count = len(range_rows)
 total_hours = sum(s2h(row.get("logged_sec")) for row in range_rows)
@@ -750,6 +1030,9 @@ render_range_summary(range_rows, required_hours)
 
 st.divider()
 render_estimate_task_board(meta)
+
+st.divider()
+render_member_task_summary_board(meta)
 
 st.divider()
 render_under_logged_section(under_logged, meta, send_email_toggle, required_hours)

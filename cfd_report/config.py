@@ -33,6 +33,11 @@ class Config:
     supabase_url: str = "https://onsxzhkogrzdwqftqsea.supabase.co"
     supabase_anon_key: str = ""
 
+    # OpenAI
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+
     # SMTP
     smtp_host: str = "smtp.exmail.qq.com"
     smtp_port: int = 465
@@ -61,6 +66,9 @@ class Config:
             cfd_org_id=os.getenv("CFD_ORG_ID", "5aka0cj1-0b28-1k26-79a4-15763431dkd2"),
             supabase_url=os.getenv("SUPABASE_URL", "https://onsxzhkogrzdwqftqsea.supabase.co"),
             supabase_anon_key=os.getenv("SUPABASE_ANON_KEY", ""),
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             smtp_host=os.getenv("SMTP_HOST", "smtp.exmail.qq.com"),
             smtp_port=int(os.getenv("SMTP_PORT", "465")),
             smtp_user=os.getenv("SMTP_USER", ""),
