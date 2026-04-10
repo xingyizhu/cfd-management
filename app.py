@@ -1,16 +1,20 @@
 """CFD 团队工时统计 - Streamlit Web UI."""
 from __future__ import annotations
 
+import html
 from datetime import date, timedelta
 from math import ceil
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
 
 from cfd_report.aggregator import (
     aggregate_high_estimate_range_entries,
+    aggregate_no_estimate_range_entries,
     aggregate_member_range_rows,
     find_under_logged_range,
+    iter_workdays,
 )
 from cfd_report.atlassian import get_team_members
 from cfd_report.config import Config
@@ -18,16 +22,16 @@ from cfd_report.emailer import send_reminders
 from cfd_report.holidays import get_cn_holidays
 from cfd_report.reporter import range_meta, s2h
 from cfd_report.supabase_client import (
-    check_daily_range_cache,
-    check_entries_range_cache,
     fetch_daily_range,
     fetch_entries_range,
+    fetch_entries_range_for_member_aggregate,
 )
 from cfd_report.sync import sync_range_window
 
-st.set_page_config(page_title="CFD 工时统计", page_icon="🛰️", layout="wide")
+st.set_page_config(page_title="CFD 工时统计", page_icon="📊", layout="wide")
 
 cfg = Config.from_env()
+auto_sync_on_query = bool(getattr(cfg, "webui_auto_sync_on_query", False))
 
 
 def inject_styles() -> None:
@@ -269,7 +273,7 @@ def render_bug_placeholder() -> None:
             <p class="hero-subtitle">页面已预留，后续可接入 Jira Bug 趋势与责任人维度统计。</p>
             <div class="hero-chip-row">
                 <span class="hero-chip">📈 趋势追踪</span>
-                <span class="hero-chip">🧩 责任分布</span>
+                <span class="hero-chip">👥 责任分布</span>
                 <span class="hero-chip">⏱️ SLA 监控</span>
             </div>
         </div>
@@ -287,16 +291,15 @@ def render_bug_placeholder() -> None:
 
     st.info("Bug 模块等待 Jira 数据接入后即可启用。")
 
-
 def render_hero(meta: dict[str, object], cache_hit: bool) -> None:
-    source_icon = "🗃️" if cache_hit else "📗"
+    source_icon = "🗄️" if cache_hit else "📋"
     source_label = "数据库缓存" if cache_hit else "Jira 实时同步"
     st.markdown(
         f"""
         <div class="hero-shell">
             <p class="hero-kicker">CFD Team Console</p>
             <h1 class="hero-title">工时范围看板</h1>
-            <p class="hero-subtitle">按时间范围聚合成员工时，统一查看区间累计、风险成员与高预估任务。</p>
+            <p class="hero-subtitle">按时间范围聚合成员工时，统一查看区间累计、风险成员与任务估时情况。</p>
             <div class="hero-chip-row">
                 <span class="hero-chip">{source_icon} {source_label}</span>
                 <span class="hero-chip">📅 开始 {meta['date_from_str']}</span>
@@ -307,7 +310,6 @@ def render_hero(meta: dict[str, object], cache_hit: bool) -> None:
         """,
         unsafe_allow_html=True,
     )
-
 
 def rows_to_df(rows: list[dict[str, object]], required_hours: float | None = None) -> pd.DataFrame:
     if not rows:
@@ -329,7 +331,6 @@ def rows_to_df(rows: list[dict[str, object]], required_hours: float | None = Non
 
     return pd.DataFrame(data)
 
-
 def render_white_table(df: pd.DataFrame) -> None:
     display_df = df.copy()
     for col in ("已记录(h)", "预估(h)", "目标(h)", "差值(h)", "区间记录(h)"):
@@ -338,12 +339,11 @@ def render_white_table(df: pd.DataFrame) -> None:
     if "达标" in display_df.columns:
         display_df["达标"] = display_df["达标"].map(lambda value: "是" if bool(value) else "否")
 
-    html = display_df.to_html(index=False, classes="cfd-table", border=0, escape=True)
-    st.markdown(f'<div class="table-shell">{html}</div>', unsafe_allow_html=True)
-
+    table_html = display_df.to_html(index=False, classes="cfd-table", border=0, escape=True)
+    st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
 
 def render_range_summary(range_rows: list[dict[str, object]], required_hours: float) -> None:
-    st.markdown('<p class="section-title">📊 时间范围工时汇总</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">工时范围汇总</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="section-desc">按成员展示所选时间范围内的累计工时、去重预估和达标状态。</p>',
         unsafe_allow_html=True,
@@ -357,78 +357,140 @@ def render_range_summary(range_rows: list[dict[str, object]], required_hours: fl
     render_white_table(df)
     st.bar_chart(df.set_index("成员")[["已记录(h)", "预估(h)"]], height=260)
 
+def _build_issue_url(issue_key: str) -> str:
+    if not issue_key:
+        return ""
+    base_url = (cfg.atlassian_cloud_url or "").rstrip("/")
+    if not base_url:
+        return ""
+    return f"{base_url}/browse/{quote(issue_key, safe='-')}"
 
-def render_high_estimate_board(meta: dict[str, object], entry_rows: list[dict[str, object]]) -> None:
-    st.markdown('<p class="section-title">📌 高预估任务</p>', unsafe_allow_html=True)
+
+def render_issue_task_table(rows: list[dict[str, object]]) -> None:
+    table_rows: list[dict[str, str]] = []
+
+    for row in rows:
+        issue_key = str(row.get("issue_key", ""))
+        issue_url = _build_issue_url(issue_key)
+        issue_cell = html.escape(issue_key)
+        if issue_url:
+            issue_cell = (
+                f'<a href="{html.escape(issue_url, quote=True)}" '
+                f'target="_blank" rel="noopener noreferrer">{html.escape(issue_key)}</a>'
+            )
+
+        table_rows.append(
+            {
+                "成员": html.escape(str(row.get("display_name", ""))),
+                "Issue": issue_cell,
+                "摘要": html.escape(str(row.get("issue_summary", ""))),
+                "预估(h)": f"{s2h(row.get('estimated_sec')):.2f}",
+                "区间记录(h)": f"{s2h(row.get('time_sec')):.2f}",
+            }
+        )
+
+    table_df = pd.DataFrame(table_rows)
+    table_html = table_df.to_html(index=False, classes="cfd-table", border=0, escape=False)
+    st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
+
+
+def render_estimate_task_board(meta: dict[str, object]) -> None:
+    st.markdown('<p class="section-title">任务估时看板</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="section-desc">按时间范围聚合高预估任务，便于识别拆解成本较高的事项。</p>',
+        '<p class="section-desc">在同一区块切换查看“无预估任务”和“高预估任务”，Issue 支持直接跳转 Jira 详情。</p>',
         unsafe_allow_html=True,
     )
 
-    control_cols = st.columns(3)
+    if not st.session_state.get("estimate_board_loaded", False):
+        if st.button("加载任务明细", key="estimate_board_load_btn", use_container_width=True):
+            st.session_state["estimate_board_loaded"] = True
+            st.rerun()
+        st.caption("未加载时仅展示摘要，点击后再查询任务明细数据。")
+        return
+
+    with st.spinner("加载任务明细中..."):
+        entry_rows = load_estimate_entries(meta["date_from_str"], meta["date_to_str"])
+
+    st.session_state.setdefault("estimate_board_view", "no_estimate")
+    st.session_state.setdefault("estimate_board_threshold_hours", 5.0)
+
+    control_cols = st.columns(4)
     with control_cols[0]:
-        threshold_hours = st.number_input(
-            "预估阈值(h)",
-            min_value=0.0,
-            value=5.0,
-            step=0.5,
-            key="high_estimate_threshold_hours",
+        selected_view = st.radio(
+            "任务视图",
+            options=["no_estimate", "high_estimate"],
+            format_func=lambda item: "无预估任务" if item == "no_estimate" else "高预估任务",
+            horizontal=True,
+            key="estimate_board_view",
         )
+
     with control_cols[1]:
         page_size = st.selectbox(
             "每页条数",
             options=[10, 20, 50],
             index=0,
-            key="high_estimate_page_size",
+            key="estimate_board_page_size",
         )
 
-    threshold_sec = int(threshold_hours * 3600)
-    aggregated_rows = aggregate_high_estimate_range_entries(entry_rows, threshold_sec)
+    threshold_hours = float(st.session_state.get("estimate_board_threshold_hours", 5.0))
+    if selected_view == "high_estimate":
+        with control_cols[2]:
+            threshold_hours = st.number_input(
+                "预估阈值(h)",
+                min_value=0.0,
+                value=threshold_hours,
+                step=0.5,
+                key="estimate_board_threshold_hours",
+            )
+
+    if selected_view == "high_estimate":
+        threshold_sec = int(threshold_hours * 3600)
+        aggregated_rows = aggregate_high_estimate_range_entries(entry_rows, threshold_sec)
+        query_signature = (
+            f"high|{meta['date_from_str']}|{meta['date_to_str']}|{threshold_hours:.2f}|{page_size}"
+        )
+        query_signature_key = "estimate_board_high_query_signature"
+        page_key = "estimate_board_page_high"
+    else:
+        aggregated_rows = aggregate_no_estimate_range_entries(entry_rows)
+        query_signature = f"no|{meta['date_from_str']}|{meta['date_to_str']}|{page_size}"
+        query_signature_key = "estimate_board_no_estimate_query_signature"
+        page_key = "estimate_board_page_no_estimate"
+
     total_count = len(aggregated_rows)
     total_pages = max(1, ceil(total_count / page_size)) if total_count else 1
-    query_signature = f"{meta['date_from_str']}|{meta['date_to_str']}|{threshold_hours:.2f}|{page_size}"
+    if st.session_state.get(query_signature_key) != query_signature:
+        st.session_state[query_signature_key] = query_signature
+        st.session_state[page_key] = 1
 
-    if st.session_state.get("high_estimate_query_signature") != query_signature:
-        st.session_state["high_estimate_query_signature"] = query_signature
-        st.session_state["high_estimate_page"] = 1
-
-    current_page = int(st.session_state.get("high_estimate_page", 1))
+    current_page = int(st.session_state.get(page_key, 1))
     current_page = min(max(1, current_page), total_pages)
-    st.session_state["high_estimate_page"] = current_page
+    st.session_state[page_key] = current_page
     page_options = list(range(1, total_pages + 1))
 
-    with control_cols[2]:
+    with control_cols[3]:
         current_page = st.selectbox(
             "页码",
             options=page_options,
             index=page_options.index(current_page),
-            key="high_estimate_page",
+            key=page_key,
         )
 
     start_idx = (current_page - 1) * page_size
     page_rows = aggregated_rows[start_idx:start_idx + page_size]
-
     if not page_rows:
         st.info("暂无满足条件的任务。")
-        st.caption("共 0 条任务")
+        st.caption(f"共 {total_count} 条任务")
         return
 
-    task_df = pd.DataFrame(
-        [
-            {
-                "成员": row.get("display_name", ""),
-                "Issue": row.get("issue_key", ""),
-                "摘要": row.get("issue_summary", ""),
-                "预估(h)": s2h(row.get("estimated_sec")),
-                "区间记录(h)": s2h(row.get("time_sec")),
-            }
-            for row in page_rows
-        ]
-    )
-    render_white_table(task_df)
-
+    render_issue_task_table(page_rows)
     end_idx = min(start_idx + page_size, total_count)
-    st.caption(f"共 {total_count} 条任务，当前显示 {start_idx + 1}-{end_idx} 条")
+    if selected_view == "high_estimate":
+        st.caption(
+            f"高预估任务共 {total_count} 条（阈值 {threshold_hours:.2f}h），当前显示 {start_idx + 1}-{end_idx} 条"
+        )
+    else:
+        st.caption(f"无预估任务共 {total_count} 条，当前显示 {start_idx + 1}-{end_idx} 条")
 
 
 def render_under_logged_section(
@@ -437,7 +499,7 @@ def render_under_logged_section(
     send_email_toggle: bool,
     required_hours: float,
 ) -> None:
-    st.markdown('<p class="section-title">🔔 工时不足提醒</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">工时不足提醒</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="section-desc">按所选时间范围识别未达到目标工时的成员，并支持发送区间提醒邮件。</p>',
         unsafe_allow_html=True,
@@ -461,7 +523,7 @@ def render_under_logged_section(
     )
     render_white_table(under_df)
 
-    if send_email_toggle and st.button("📨 立即发送区间提醒邮件"):
+    if send_email_toggle and st.button("📠 立即发送区间提醒邮件"):
         reminder_context = {
             "date_from": meta["date_from_str"],
             "date_to": meta["date_to_str"],
@@ -474,7 +536,6 @@ def render_under_logged_section(
         if skipped:
             st.warning("跳过：" + "；".join(skipped))
 
-
 def get_holidays_for_range(start: date, end: date) -> set[str]:
     holidays: set[str] = set()
     for year in range(start.year, end.year + 1):
@@ -482,8 +543,34 @@ def get_holidays_for_range(start: date, end: date) -> set[str]:
     return holidays
 
 
+@st.cache_data(ttl=14400, show_spinner=False)
+def load_team_members() -> list[dict[str, object]]:
+    return get_team_members(cfg)
+
+
+def _has_daily_coverage(meta: dict[str, object], holidays: set[str], daily_rows: list[dict[str, object]]) -> bool:
+    expected_dates = set(iter_workdays(meta["date_from_str"], meta["date_to_str"], holidays))
+    if not expected_dates:
+        return True
+    cached_dates = {row.get("work_date") for row in daily_rows if row.get("work_date")}
+    return expected_dates.issubset(cached_dates)
+
+
+def _has_entry_coverage(
+    daily_rows: list[dict[str, object]],
+    entry_rows: list[dict[str, object]],
+) -> bool:
+    logged_dates = {
+        row.get("work_date")
+        for row in daily_rows
+        if (row.get("logged_sec", 0) or 0) > 0 and row.get("work_date")
+    }
+    entry_dates = {row.get("work_date") for row in entry_rows if row.get("work_date")}
+    return logged_dates.issubset(entry_dates)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
-def load_data(date_from: str, date_to: str, force_refresh: bool) -> dict[str, object]:
+def load_base_data(date_from: str, date_to: str, force_refresh: bool) -> dict[str, object]:
     start = date.fromisoformat(date_from)
     end = date.fromisoformat(date_to)
     if start > end:
@@ -491,32 +578,26 @@ def load_data(date_from: str, date_to: str, force_refresh: bool) -> dict[str, ob
 
     holidays = get_holidays_for_range(start, end)
     meta = range_meta(start, end, holidays)
-    members = get_team_members(cfg)
+    members = load_team_members()
+    synced = False
 
     if force_refresh:
         sync_range_window(cfg, start, end, members, holidays)
-        cache_hit = False
-    else:
-        daily_cache_hit = check_daily_range_cache(cfg, meta["date_from_str"], meta["date_to_str"])
-        entries_cache_hit = check_entries_range_cache(cfg, meta["date_from_str"], meta["date_to_str"])
-        cache_hit = daily_cache_hit and entries_cache_hit
-        if not cache_hit:
-            sync_range_window(cfg, start, end, members, holidays)
-
-    daily_rows = fetch_daily_range(cfg, meta["date_from_str"], meta["date_to_str"])
-    entry_rows = fetch_entries_range(cfg, meta["date_from_str"], meta["date_to_str"])
-
-    logged_dates = {
-        row.get("work_date")
-        for row in daily_rows
-        if (row.get("logged_sec", 0) or 0) > 0 and row.get("work_date")
-    }
-    entry_dates = {row.get("work_date") for row in entry_rows if row.get("work_date")}
-    if not force_refresh and not logged_dates.issubset(entry_dates):
-        sync_range_window(cfg, start, end, members, holidays)
-        cache_hit = False
+        synced = True
         daily_rows = fetch_daily_range(cfg, meta["date_from_str"], meta["date_to_str"])
-        entry_rows = fetch_entries_range(cfg, meta["date_from_str"], meta["date_to_str"])
+        entry_rows = fetch_entries_range_for_member_aggregate(cfg, meta["date_from_str"], meta["date_to_str"])
+    elif auto_sync_on_query:
+        daily_rows = fetch_daily_range(cfg, meta["date_from_str"], meta["date_to_str"])
+        entry_rows = fetch_entries_range_for_member_aggregate(cfg, meta["date_from_str"], meta["date_to_str"])
+        if not (_has_daily_coverage(meta, holidays, daily_rows) and _has_entry_coverage(daily_rows, entry_rows)):
+            sync_range_window(cfg, start, end, members, holidays)
+            synced = True
+            daily_rows = fetch_daily_range(cfg, meta["date_from_str"], meta["date_to_str"])
+            entry_rows = fetch_entries_range_for_member_aggregate(cfg, meta["date_from_str"], meta["date_to_str"])
+    else:
+        # 极速读取模式：默认仅读取 Supabase 缓存，不自动回源 Jira。
+        daily_rows = fetch_daily_range(cfg, meta["date_from_str"], meta["date_to_str"])
+        entry_rows = fetch_entries_range_for_member_aggregate(cfg, meta["date_from_str"], meta["date_to_str"])
 
     range_rows = aggregate_member_range_rows(
         daily_rows,
@@ -528,11 +609,15 @@ def load_data(date_from: str, date_to: str, force_refresh: bool) -> dict[str, ob
 
     return {
         "daily_rows": daily_rows,
-        "entry_rows": entry_rows,
         "range_rows": range_rows,
         "meta": meta,
-        "cache_hit": cache_hit,
+        "cache_hit": not synced,
     }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_estimate_entries(date_from: str, date_to: str) -> list[dict[str, object]]:
+    return fetch_entries_range(cfg, date_from, date_to)
 
 
 inject_styles()
@@ -577,9 +662,11 @@ with st.sidebar:
             max_value=today,
         )
         send_email_toggle = st.toggle("启用邮件提醒", value=False)
-        refresh_btn = st.button("🔄 刷新数据", use_container_width=True, type="primary")
+        refresh_btn = st.button("🔧 刷新数据", use_container_width=True, type="primary")
         with st.expander("高级选项", expanded=False):
             force_refresh = st.checkbox("强制重新拉取 Jira（忽略缓存）", value=False)
+        strategy_label = "平衡模式（查询时自动补同步）" if auto_sync_on_query else "极速读取（查询只读缓存）"
+        st.caption(f"查询策略：`{strategy_label}`")
         st.caption(f"日工时目标：`{cfg.daily_target_hours} h`")
     else:
         selected_range = (today, today)
@@ -599,23 +686,37 @@ else:
     range_end = selected_range
 
 if refresh_btn:
-    st.cache_data.clear()
+    load_base_data.clear()
+    load_estimate_entries.clear()
 
 with st.spinner("加载数据中..."):
     try:
-        data_bundle = load_data(range_start.isoformat(), range_end.isoformat(), force_refresh)
+        data_bundle = load_base_data(range_start.isoformat(), range_end.isoformat(), force_refresh)
     except Exception as error:
         st.error(f"数据加载失败：{error}")
         st.stop()
 
 meta = data_bundle["meta"]
 range_rows = data_bundle["range_rows"]
-entry_rows = data_bundle["entry_rows"]
 cache_hit = bool(data_bundle["cache_hit"])
 required_hours = meta["workday_count"] * cfg.daily_target_hours
 under_logged = find_under_logged_range(range_rows, required_hours)
 
+range_signature = f"{meta['date_from_str']}|{meta['date_to_str']}"
+if st.session_state.get("estimate_board_range_signature") != range_signature:
+    st.session_state["estimate_board_range_signature"] = range_signature
+    st.session_state["estimate_board_loaded"] = False
+    st.session_state["estimate_board_view"] = "no_estimate"
+    st.session_state["estimate_board_high_query_signature"] = ""
+    st.session_state["estimate_board_no_estimate_query_signature"] = ""
+    st.session_state["estimate_board_page_high"] = 1
+    st.session_state["estimate_board_page_no_estimate"] = 1
+
 render_hero(meta, cache_hit)
+if auto_sync_on_query:
+    st.caption("当前策略：平衡模式（仅在缓存覆盖不足时自动补同步）。")
+else:
+    st.caption("当前策略：极速读取（默认只读 Supabase 缓存；勾选“强制重新拉取 Jira”后刷新可同步）。")
 
 member_count = len(range_rows)
 total_hours = sum(s2h(row.get("logged_sec")) for row in range_rows)
@@ -648,7 +749,9 @@ if meta["workday_count"] == 0:
 render_range_summary(range_rows, required_hours)
 
 st.divider()
-render_high_estimate_board(meta, entry_rows)
+render_estimate_task_board(meta)
 
 st.divider()
 render_under_logged_section(under_logged, meta, send_email_toggle, required_hours)
+
+

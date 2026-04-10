@@ -1,6 +1,6 @@
 # CFD 团队工时统计系统
 
-统计 Jira CFD 项目全体成员的每日工时，按日/周/季度维度汇总，缓存至 Supabase，对当日工时不足 7.5h 的成员发送邮件提醒；Web UI 同时提供“预估时长 > 5h 任务看板”（支持分页）。
+统计 Jira CFD 项目全体成员的每日工时，按日/周/季度维度汇总，缓存至 Supabase，对当日工时不足 7.5h 的成员发送邮件提醒；Web UI 同时提供任务估时看板。
 
 ## 快速启动
 
@@ -24,14 +24,14 @@ streamlit run app.py
 
 | 参数 | 说明 |
 |------|------|
-| `--date YYYY-MM-DD` | 指定统计日期（默认今天）|
+| `--date YYYY-MM-DD` | 指定统计日期（默认今天） |
 | `--no-email` | 只生成报告，不发送邮件 |
 | `--week-only` | 只输出本周维度 |
 | `--quarter-only` | 只输出本季度维度 |
 
 ## 配置说明
 
-详见 `.env.example` 和 `CLAUDE.md`。
+详见 `.env.example` 和 `CLAUDE.md`。Web UI 默认使用极速读取模式（`WEBUI_AUTO_SYNC_ON_QUERY=false`），仅在勾选“强制重新拉取 Jira”后刷新时回源 Jira。
 
 ## 技术栈
 
@@ -40,3 +40,8 @@ streamlit run app.py
 - Supabase (PostgreSQL)
 - Streamlit（Web UI）
 - SMTP（邮件提醒）
+
+## Web UI Task Estimate Board
+
+- 任务估时看板整合为一个模块，可在“无预估任务”和“高预估任务”视图之间切换。
+- `Issue` 列支持直接跳转到 Jira 详情页（`{ATLASSIAN_CLOUD_URL}/browse/{issue_key}`）。

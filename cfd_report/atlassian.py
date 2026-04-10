@@ -14,6 +14,52 @@ def _auth_header(cfg: Config) -> str:
     return "Basic " + base64.b64encode(raw.encode()).decode()
 
 
+def _fetch_user_profiles_bulk(
+    cfg: Config,
+    auth: str,
+    account_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Fetch Jira users in bulk and map by accountId."""
+    if not account_ids:
+        return {}
+
+    profiles: dict[str, dict[str, Any]] = {}
+    batch_size = 100
+    user_bulk_url = f"{cfg.atlassian_cloud_url}/rest/api/3/user/bulk"
+
+    for idx in range(0, len(account_ids), batch_size):
+        batch_ids = account_ids[idx:idx + batch_size]
+        start_at = 0
+        while True:
+            params: list[tuple[str, Any]] = [("accountId", account_id) for account_id in batch_ids]
+            params.extend([("startAt", start_at), ("maxResults", batch_size)])
+            response = requests.get(
+                user_bulk_url,
+                params=params,
+                headers={"Authorization": auth, "Accept": "application/json"},
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            for user in payload.get("values", []):
+                account_id = user.get("accountId")
+                if not account_id:
+                    continue
+                profiles[account_id] = {
+                    "accountId": account_id,
+                    "displayName": user.get("displayName", account_id),
+                    "emailAddress": user.get("emailAddress", ""),
+                    "active": user.get("active", True),
+                }
+
+            if payload.get("isLast", True):
+                break
+
+            start_at += int(payload.get("maxResults", batch_size))
+
+    return profiles
+
+
 def get_team_members(cfg: Config) -> list[dict[str, Any]]:
     """通过 Atlassian Teams API 获取 CFD 团队成员列表。"""
     auth = _auth_header(cfg)
@@ -30,26 +76,26 @@ def get_team_members(cfg: Config) -> list[dict[str, Any]]:
     resp.raise_for_status()
     account_ids = [m["accountId"] for m in resp.json().get("results", []) if m.get("accountId")]
 
-    members: list[dict[str, Any]] = []
-    for aid in account_ids:
-        user_url = f"{cfg.atlassian_cloud_url}/rest/api/3/user?accountId={aid}"
-        try:
-            r = requests.get(
-                user_url,
-                headers={"Authorization": auth, "Accept": "application/json"},
-                timeout=10,
-            )
-            r.raise_for_status()
-            u = r.json()
-            members.append({
-                "accountId": aid,
-                "displayName": u.get("displayName", aid),
-                "emailAddress": u.get("emailAddress", ""),
-                "active": u.get("active", True),
-            })
-        except Exception:
-            members.append({"accountId": aid, "displayName": aid, "emailAddress": "", "active": True})
-    return members
+    if not account_ids:
+        return []
+
+    try:
+        member_by_id = _fetch_user_profiles_bulk(cfg, auth, account_ids)
+    except Exception:
+        member_by_id = {}
+
+    return [
+        member_by_id.get(
+            account_id,
+            {
+                "accountId": account_id,
+                "displayName": account_id,
+                "emailAddress": "",
+                "active": True,
+            },
+        )
+        for account_id in account_ids
+    ]
 
 
 def search_jira_issues(

@@ -9,6 +9,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _as_bool(raw: str, default: bool) -> bool:
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 @dataclass
 class Config:
     # Atlassian
@@ -32,6 +43,7 @@ class Config:
     # Business
     daily_target_hours: float = 7.5
     member_email_map: dict[str, str] = field(default_factory=dict)
+    webui_auto_sync_on_query: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -56,4 +68,5 @@ class Config:
             smtp_sender=os.getenv("SMTP_SENDER", ""),
             daily_target_hours=float(os.getenv("DAILY_TARGET_HOURS", "7.5")),
             member_email_map=email_map,
+            webui_auto_sync_on_query=_as_bool(os.getenv("WEBUI_AUTO_SYNC_ON_QUERY", "false"), False),
         )

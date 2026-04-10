@@ -409,6 +409,46 @@ def aggregate_high_estimate_range_entries(
     return rows
 
 
+def aggregate_no_estimate_range_entries(
+    entry_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate range entries to one row per member and issue with zero estimate."""
+    row_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in entry_rows:
+        account_id = row.get("account_id", "")
+        issue_key = row.get("issue_key", "")
+        if not account_id or not issue_key:
+            continue
+
+        map_key = (account_id, issue_key)
+        if map_key not in row_by_key:
+            row_by_key[map_key] = {
+                "account_id": account_id,
+                "display_name": row.get("display_name", account_id),
+                "issue_key": issue_key,
+                "issue_summary": row.get("issue_summary", ""),
+                "estimated_sec": row.get("estimated_sec", 0) or 0,
+                "time_sec": 0,
+            }
+
+        row_by_key[map_key]["time_sec"] += row.get("time_sec", 0) or 0
+        row_by_key[map_key]["estimated_sec"] = max(
+            row_by_key[map_key]["estimated_sec"],
+            row.get("estimated_sec", 0) or 0,
+        )
+
+    rows = [row for row in row_by_key.values() if (row.get("estimated_sec", 0) or 0) == 0]
+    rows.sort(
+        key=lambda item: (
+            -(item.get("time_sec", 0) or 0),
+            item.get("issue_key", ""),
+            item.get("account_id", ""),
+        )
+    )
+    return rows
+
+
 def find_under_logged(
     daily_rows: list[dict[str, Any]],
     target_date: str,

@@ -9,3 +9,7 @@ venv/
 dist/
 build/
 .streamlit/secrets.toml
+streamlit.err.log
+streamlit.log
+.venv
+.idea

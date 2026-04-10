@@ -270,30 +270,69 @@ def fetch_daily(cfg: Config, work_date: str) -> list[dict[str, Any]]:
     return response.json()
 
 
+def _fetch_range_rows_paginated(
+    cfg: Config,
+    base_url: str,
+    *,
+    timeout: int,
+    page_size: int = 2000,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    safe_page_size = max(1, int(page_size))
+
+    while True:
+        response = requests.get(
+            f"{base_url}&limit={safe_page_size}&offset={offset}",
+            headers=_headers(cfg),
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        batch = response.json()
+        if not batch:
+            break
+
+        rows.extend(batch)
+        if len(batch) < safe_page_size:
+            break
+        offset += safe_page_size
+
+    return rows
+
+
 def fetch_daily_range(cfg: Config, date_from: str, date_to: str) -> list[dict[str, Any]]:
-    url = (
+    base_url = (
         f"{cfg.supabase_url}/rest/v1/worklog_daily"
         f"?work_date=gte.{date_from}"
         f"&work_date=lte.{date_to}"
         f"&order=work_date.asc,display_name.asc"
-        f"&limit=5000"
     )
-    response = requests.get(url, headers=_headers(cfg), timeout=15)
-    response.raise_for_status()
-    return response.json()
+    return _fetch_range_rows_paginated(cfg, base_url, timeout=15)
 
 
 def fetch_entries_range(cfg: Config, date_from: str, date_to: str) -> list[dict[str, Any]]:
-    url = (
+    base_url = (
         f"{cfg.supabase_url}/rest/v1/worklog_entries"
         f"?work_date=gte.{date_from}"
         f"&work_date=lte.{date_to}"
         f"&order=work_date.asc,issue_key.asc,account_id.asc"
-        f"&limit=10000"
     )
-    response = requests.get(url, headers=_headers(cfg), timeout=20)
-    response.raise_for_status()
-    return response.json()
+    return _fetch_range_rows_paginated(cfg, base_url, timeout=20)
+
+
+def fetch_entries_range_for_member_aggregate(
+    cfg: Config,
+    date_from: str,
+    date_to: str,
+) -> list[dict[str, Any]]:
+    """Fetch minimal fields for range member aggregation."""
+    base_url = (
+        f"{cfg.supabase_url}/rest/v1/worklog_entries"
+        f"?select=account_id,work_date,issue_key,estimated_sec"
+        f"&work_date=gte.{date_from}"
+        f"&work_date=lte.{date_to}"
+    )
+    return _fetch_range_rows_paginated(cfg, base_url, timeout=15)
 
 
 def fetch_weekly(cfg: Config, week_start: str) -> list[dict[str, Any]]:
