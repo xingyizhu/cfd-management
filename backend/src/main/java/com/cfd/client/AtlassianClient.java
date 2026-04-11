@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.net.URI;
 import java.util.*;
 
 @Slf4j
@@ -74,9 +75,10 @@ public class AtlassianClient {
                     builder.queryParam("accountId", id);
                 }
 
+                URI bulkUri = builder.encode().build().toUri();
                 HttpEntity<Void> entity = new HttpEntity<>(authHeaders());
                 ResponseEntity<JsonNode> resp = restTemplate.exchange(
-                        builder.toUriString(), HttpMethod.GET, entity, JsonNode.class);
+                        bulkUri, HttpMethod.GET, entity, JsonNode.class);
 
                 JsonNode payload = resp.getBody();
                 for (JsonNode user : payload.path("values")) {
@@ -137,9 +139,10 @@ public class AtlassianClient {
                 builder.queryParam("nextPageToken", nextPageToken);
             }
 
+            URI searchUri = builder.encode().build().toUri();
             HttpEntity<Void> entity = new HttpEntity<>(authHeaders());
             ResponseEntity<JsonNode> resp = restTemplate.exchange(
-                    builder.toUriString(), HttpMethod.GET, entity, JsonNode.class);
+                    searchUri, HttpMethod.GET, entity, JsonNode.class);
 
             JsonNode data = resp.getBody();
             JsonNode batch = data.path("issues");
@@ -176,13 +179,14 @@ public class AtlassianClient {
         int startAt = 0;
 
         while (true) {
-            UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(url)
+            URI wlUri = UriComponentsBuilder.fromHttpUrl(url)
                     .queryParam("startAt", startAt)
-                    .queryParam("maxResults", 100);
+                    .queryParam("maxResults", 100)
+                    .encode().build().toUri();
 
             HttpEntity<Void> entity = new HttpEntity<>(authHeaders());
             ResponseEntity<JsonNode> resp = restTemplate.exchange(
-                    builder.toUriString(), HttpMethod.GET, entity, JsonNode.class);
+                    wlUri, HttpMethod.GET, entity, JsonNode.class);
 
             JsonNode data = resp.getBody();
             JsonNode batch = data.path("worklogs");
