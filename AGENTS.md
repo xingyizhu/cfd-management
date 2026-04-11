@@ -48,3 +48,9 @@
 - `.env` 仅用于本地开发参考，真实运行时需将变量导入 shell、IDE 或部署环境，禁止提交任何密钥。
 - 严禁在源码默认值中保留真实 `ATLASSIAN_API_TOKEN`、`SUPABASE_ANON_KEY`、`SMTP_PASSWORD` 等敏感信息。
 - `MEMBER_EMAIL_MAP` 必须是合法 JSON；改动邮件提醒逻辑前先用小范围账号验证。
+
+## 文件读取范围
+- 忽略 `node_modules/`、`target/`、`.idea/`、`.vscode/` 等 IDE 和构建产物目录。
+- 仅处理 `backend/src/main/java/`、`frontend/src/` 下的源代码文件；其他文档、配置文件仅在必要时参考。
+- 任何涉及敏感信息的文件（如 `.env`）必须严格遵守安全规范，禁止直接读取或输出其内容。
+
