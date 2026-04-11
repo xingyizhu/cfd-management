@@ -11,6 +11,7 @@ build/
 backend/target/
 frontend/dist/
 frontend/node_modules/
+frontend/.vite/
 .streamlit/secrets.toml
 streamlit.err.log
 streamlit.log

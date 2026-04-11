@@ -1,47 +1,95 @@
 # CFD 团队工时统计系统
 
-统计 Jira CFD 项目全体成员的每日工时，按日/周/季度维度汇总，缓存至 Supabase，对当日工时不足 7.5h 的成员发送邮件提醒；Web UI 同时提供任务估时看板。
+Spring Boot + Vue 3 monorepo，用于同步 Jira CFD 团队工时、聚合日/周/季度统计、缓存到 Supabase，并对工时不足成员发送提醒邮件。历史 Python/Streamlit 实现已从当前分支移除。
+
+## 项目结构
+
+```text
+cfd-management/
+├── backend/                 # Spring Boot 3 / Java 17 / Maven
+├── frontend/                # Vue 3 / TypeScript / Vite
+├── .env.example             # 环境变量模板
+├── AGENTS.md                # 仓库协作约定
+└── CLAUDE.md                # 本地开发上下文说明
+```
+
+## 环境要求
+
+- Java 17+
+- Maven 3.9+
+- Node.js 18+
+- npm 9+
 
 ## 快速启动
 
+`.env.example` 是配置模板。后端通过 `backend/src/main/resources/application.yml` 读取环境变量，因此本地运行前需要先把变量导入 shell 或 IDE 运行配置。
+
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
-
-# 2. 配置环境变量
+# 1. 准备环境变量
 cp .env.example .env
-# 编辑 .env 填入真实配置
+set -a
+source .env
+set +a
 
-# 3a. CLI 模式
-python main.py --no-email
+# 2. 启动后端
+cd backend
+mvn spring-boot:run
 
-# 3b. Web UI 模式
-streamlit run app.py
-# 访问 http://localhost:8501
+# 3. 启动前端（新终端）
+cd frontend
+npm install
+npm run dev
 ```
 
-## CLI 参数
+本地默认地址：
 
-| 参数 | 说明 |
-|------|------|
-| `--date YYYY-MM-DD` | 指定统计日期（默认今天） |
-| `--no-email` | 只生成报告，不发送邮件 |
-| `--week-only` | 只输出本周维度 |
-| `--quarter-only` | 只输出本季度维度 |
+- 前端：`http://localhost:5173`
+- 后端：`http://localhost:8080`
+
+Vite 已配置 `/api` 代理到后端。
+
+## 常用命令
+
+```bash
+# 后端测试
+cd backend
+mvn test
+
+# 后端打包
+cd backend
+mvn package
+
+# 前端构建
+cd frontend
+npm run build
+
+# 前端预览构建产物
+cd frontend
+npm run preview
+```
+
+## 当前能力
+
+- Jira 团队成员拉取：`GET /api/team/members`
+- 工时区间汇总：`GET /api/worklog/range`
+- 工时明细读取：`GET /api/worklog/entries`
+- Jira 数据同步：`POST /api/sync`
+- 工时提醒邮件：`POST /api/email/remind`
+- 节假日查询：`GET /api/holidays`
+
+前端当前提供：
+
+- `/worklog`：工时范围看板、缓存读取、强制同步、提醒邮件发送
+- `/bug`：Bug 页面占位视图
 
 ## 配置说明
 
-详见 `.env.example` 和 `CLAUDE.md`。Web UI 默认使用极速读取模式（`WEBUI_AUTO_SYNC_ON_QUERY=false`），仅在勾选“强制重新拉取 Jira”后刷新时回源 Jira。
+根目录 `.env.example` 保留了当前后端所需的主要变量：
 
-## 技术栈
+- Atlassian：`ATLASSIAN_USER_EMAIL`、`ATLASSIAN_API_TOKEN`、`ATLASSIAN_CLOUD_URL`、`CFD_TEAM_ID`、`CFD_ORG_ID`
+- Supabase：`SUPABASE_URL`、`SUPABASE_ANON_KEY`
+- SMTP：`SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_SENDER`
+- 业务配置：`DAILY_TARGET_HOURS`、`MEMBER_EMAIL_MAP`、`WEBUI_AUTO_SYNC_ON_QUERY`
+- 调度配置：`CFD_SCHEDULER_ENABLED`、`CFD_SYNC_CRON`、`CFD_REMINDER_CRON`、`CFD_SCHEDULER_ZONE`
 
-- Python 3.10+
-- Atlassian REST API v3 / Teams API
-- Supabase (PostgreSQL)
-- Streamlit（Web UI）
-- SMTP（邮件提醒）
-
-## Web UI Task Estimate Board
-
-- 任务估时看板整合为一个模块，可在“无预估任务”和“高预估任务”视图之间切换。
-- `Issue` 列支持直接跳转到 Jira 详情页（`{ATLASSIAN_CLOUD_URL}/browse/{issue_key}`）。
+更多上下文见 [CLAUDE.md](CLAUDE.md) 和 [AGENTS.md](AGENTS.md)。
