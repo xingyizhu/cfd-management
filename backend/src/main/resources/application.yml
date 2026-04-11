@@ -1,0 +1,38 @@
+server:
+  port: 8080
+
+spring:
+  mail:
+    host: ${SMTP_HOST:smtp.exmail.qq.com}
+    port: ${SMTP_PORT:465}
+    username: ${SMTP_USER:}
+    password: ${SMTP_PASSWORD:}
+    protocol: smtps
+    properties:
+      mail:
+        smtp:
+          ssl:
+            enable: true
+          auth: true
+
+cfd:
+  atlassian:
+    user-email: ${ATLASSIAN_USER_EMAIL:}
+    api-token: ${ATLASSIAN_API_TOKEN:}
+    cloud-url: ${ATLASSIAN_CLOUD_URL:https://ddmarketinghub.atlassian.net}
+    team-id: ${CFD_TEAM_ID:3fd8537f-41c2-4c8e-b818-1e8cfea9746c}
+    org-id: ${CFD_ORG_ID:5aka0cj1-0b28-1k26-79a4-15763431dkd2}
+  supabase:
+    url: ${SUPABASE_URL:}
+    anon-key: ${SUPABASE_ANON_KEY:}
+  smtp:
+    sender: ${SMTP_SENDER:}
+  business:
+    daily-target-hours: ${DAILY_TARGET_HOURS:7.5}
+    member-email-map: ${MEMBER_EMAIL_MAP:{}}
+    webui-auto-sync-on-query: ${WEBUI_AUTO_SYNC_ON_QUERY:false}
+  scheduler:
+    enabled: ${CFD_SCHEDULER_ENABLED:false}
+    sync-cron: ${CFD_SYNC_CRON:0 30 18 * * MON-FRI}
+    reminder-cron: ${CFD_REMINDER_CRON:0 0 19 * * MON-FRI}
+    zone: ${CFD_SCHEDULER_ZONE:Asia/Shanghai}

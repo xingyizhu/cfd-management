@@ -8,6 +8,9 @@ venv/
 *.egg-info/
 dist/
 build/
+backend/target/
+frontend/dist/
+frontend/node_modules/
 .streamlit/secrets.toml
 streamlit.err.log
 streamlit.log

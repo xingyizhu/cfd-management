@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;700&display=swap');
+
+:root {
+  --bg-0: #080d1b;
+  --bg-1: #111b34;
+  --border: rgba(145, 175, 255, 0.28);
+  --text-main: #eff5ff;
+  --text-sub: #b9c8eb;
+  --shadow: 0 16px 38px rgba(2, 8, 22, 0.42);
+  --accent: #6aa3ff;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: "Noto Sans SC", "PingFang SC", sans-serif;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at 16% -10%, #3257a7 0%, transparent 40%),
+    radial-gradient(circle at 88% 5%, #1f4d57 0%, transparent 30%),
+    linear-gradient(160deg, var(--bg-0) 0%, #0b1730 42%, var(--bg-1) 100%);
+  min-height: 100vh;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(147, 178, 255, 0.3);
+  border-radius: 3px;
+}
