@@ -2,63 +2,104 @@
 
 ## 项目概述
 
-统计 Jira CFD 项目全体成员的每日工时，按日/周/季度维度汇总，缓存至 Supabase，并对当日工时不足 7.5h 的成员发送邮件提醒。提供 CLI 和 Streamlit Web UI 两种访问方式。
+当前分支已切换为 Spring Boot + Vue 3 monorepo。后端负责 Jira/Supabase/SMTP 集成、工时聚合和提醒接口，前端负责区间工时看板与交互。历史 Python/Streamlit 实现已移除。
 
 ## 目录结构
 
-```
-Management/
-├── CLAUDE.md               # 本文件（Claude Code 自动加载）
-├── .env                    # 实际配置（不提交 git）
-├── .env.example            # 环境变量模板
-├── requirements.txt        # requests, streamlit, python-dotenv, pandas
-├── main.py                 # CLI 入口
-├── app.py                  # Streamlit Web UI（streamlit run app.py）
-└── cfd_report/
-    ├── config.py           # Config dataclass，从 .env 加载
-    ├── atlassian.py        # Atlassian Teams API + Jira API
-    ├── supabase_client.py  # Supabase 缓存读写
-    ├── aggregator.py       # worklog 聚合（日/周/季度）
-    ├── holidays.py         # 中国法定节假日
-    ├── reporter.py         # 报告数据结构
-    └── emailer.py          # SMTP 邮件发送
+```text
+cfd-management/
+├── CLAUDE.md
+├── AGENTS.md
+├── README.md
+├── .env.example
+├── backend/
+│   ├── pom.xml
+│   └── src/
+│       ├── main/java/com/cfd/
+│       │   ├── config/      # AppProperties、CORS、RestTemplate
+│       │   ├── controller/  # REST API 入口
+│       │   ├── service/     # 聚合、同步、提醒、节假日
+│       │   ├── client/      # Atlassian / Supabase HTTP 客户端
+│       │   └── model/       # DTO
+│       ├── main/resources/application.yml
+│       └── test/java/com/cfd/service/
+└── frontend/
+    ├── package.json
+    ├── vite.config.ts
+    └── src/
+        ├── api/             # axios API 封装
+        ├── components/      # 通用组件
+        ├── router/          # Vue Router
+        ├── stores/          # Pinia store
+        ├── types/           # TypeScript 类型
+        └── views/           # 页面视图
 ```
 
 ## 环境配置
 
-复制 `.env.example` 为 `.env` 并填写：
+`.env.example` 仍是统一模板，但后端不会自动读取根目录 `.env` 文件；运行前需要把变量导入当前 shell 或 IDE。
+
+```bash
+cp .env.example .env
+set -a
+source .env
+set +a
+```
+
+关键变量：
 
 | 变量 | 说明 |
 |------|------|
 | `ATLASSIAN_USER_EMAIL` | Jira 登录邮箱 |
-| `ATLASSIAN_API_TOKEN` | Atlassian API Token（在 id.atlassian.com 生成）|
+| `ATLASSIAN_API_TOKEN` | Atlassian API Token |
 | `ATLASSIAN_CLOUD_URL` | Jira 实例地址 |
-| `CFD_TEAM_ID` | CFD 团队 ID（固定，一般不改）|
-| `CFD_ORG_ID` | Atlassian Org ID（固定，一般不改）|
-| `SUPABASE_URL` | Supabase 项目 URL |
-| `SUPABASE_ANON_KEY` | Supabase anon key |
-| `SMTP_HOST/PORT/USER/PASSWORD` | 邮件服务器配置 |
-| `DAILY_TARGET_HOURS` | 日工时目标（默认 7.5）|
-| `MEMBER_EMAIL_MAP` | JSON 字符串，accountId → 邮箱 |
+| `CFD_TEAM_ID` / `CFD_ORG_ID` | 团队和组织标识 |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Supabase 访问配置 |
+| `SMTP_HOST/PORT/USER/PASSWORD/SENDER` | 邮件服务器配置 |
+| `DAILY_TARGET_HOURS` | 日工时目标 |
+| `MEMBER_EMAIL_MAP` | accountId 到邮箱的 JSON 映射 |
+| `CFD_SCHEDULER_ENABLED` / `CFD_SYNC_CRON` / `CFD_REMINDER_CRON` / `CFD_SCHEDULER_ZONE` | 定时任务配置 |
 
 ## 常用命令
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 启动后端
+cd backend
+mvn spring-boot:run
 
-# CLI：生成今日报告（不发邮件）
-python main.py --no-email
+# 后端测试与打包
+cd backend
+mvn test
+mvn package
 
-# CLI：指定日期
-python main.py --date 2026-04-03 --no-email
+# 启动前端
+cd frontend
+npm install
+npm run dev
 
-# CLI：仅查看本周数据
-python main.py --week-only --no-email
-
-# Web UI
-streamlit run app.py   # 访问 http://localhost:8501
+# 前端构建
+cd frontend
+npm run build
 ```
+
+默认端口：
+
+- 后端：`http://localhost:8080`
+- 前端：`http://localhost:5173`
+
+## 当前 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/team/members` | 获取团队成员 |
+| `GET` | `/api/worklog/range` | 获取区间汇总 |
+| `GET` | `/api/worklog/entries` | 获取区间明细 |
+| `POST` | `/api/sync` | 同步 Jira 数据到 Supabase |
+| `POST` | `/api/email/remind` | 发送工时提醒邮件 |
+| `GET` | `/api/holidays` | 查询节假日和工作日 |
+| `GET` | `/api/reports/daily` | 读取日聚合 |
+| `GET` | `/api/reports/weekly` | 读取周聚合 |
+| `GET` | `/api/reports/quarterly` | 读取季度聚合 |
 
 ## Supabase 表结构
 
@@ -74,8 +115,13 @@ streamlit run app.py   # 访问 http://localhost:8501
 | issue_keys | text[] | Issue Key 列表 |
 | updated_at | timestamptz | 更新时间 |
 
-### worklog_weekly（week_start 为周一日期）
-### worklog_quarterly（quarter_key 格式：2026-Q2）
+### worklog_weekly
+
+`week_start` 为周一起始日期。
+
+### worklog_quarterly
+
+`quarter_key` 格式为 `2026-Q2`。
 
 ### worklog_entries
 | 字段 | 类型 | 说明 |
@@ -92,18 +138,9 @@ streamlit run app.py   # 访问 http://localhost:8501
 | status_name | text | Jira 当前状态名称 |
 | updated_at | timestamptz | 更新时间 |
 
-## 关联 Skill
+## 开发注意事项
 
-`/jira-cfd-daily-report` — 通过 Claude Code skill 触发完整报告流程（含 MCP 工具调用）
-
-## 缓存策略
-
-每次运行先查 Supabase 是否有当日数据：
-- **命中** → 直接从数据库读取展示，跳过 Jira API 调用
-- **未命中** → 查询 Jira → 聚合 → 写入 Supabase → 展示
-
-## 注意事项
-
-- Jira API 每次最多返回 20 条 worklog，超出自动分页
-- `MEMBER_EMAIL_MAP` 需手动维护 accountId → 邮箱的映射
-- 节假日数据优先从 nager.at API 获取，失败时使用硬编码兜底
+- Vite 已代理 `/api` 到 `http://localhost:8080`。
+- Jira worklog 拉取需要处理分页，节假日优先使用 Nager.Date，失败时走本地兜底。
+- `MEMBER_EMAIL_MAP` 仍需手动维护，发送邮件前先确认账号映射完整。
+- 对外配置应优先通过环境变量注入，不要把真实密钥写入源码默认值。
